@@ -46,14 +46,30 @@ def index():
     """Serve the main page"""
     return render_template('index.html')
 
-@app.route('/api/chat', methods=['POST'])
+def get_chat_parameters():
+    """Get chat parameters from request (supports GET and POST)"""
+    if request.method == 'POST':
+        data = request.json
+        messages = data.get('messages', [])
+        temperature = data.get('temperature', config['generation'].get('temperature', 0.7))
+        max_new_tokens = data.get('max_new_tokens', config['generation'].get('max_new_tokens', 2048))
+        top_p = data.get('top_p', config['generation'].get('top_p', 0.8))
+        repetition_penalty = data.get('repetition_penalty', config['generation'].get('repetition_penalty', 1.1))
+    else:
+        # GET request for EventSource
+        messages_json = request.args.get('messages', '[]')
+        messages = json.loads(messages_json)
+        temperature = float(request.args.get('temperature', config['generation'].get('temperature', 0.7)))
+        max_new_tokens = int(float(request.args.get('max_new_tokens', config['generation'].get('max_new_tokens', 2048))))
+        top_p = float(request.args.get('top_p', config['generation'].get('top_p', 0.8)))
+        repetition_penalty = float(request.args.get('repetition_penalty', config['generation'].get('repetition_penalty', 1.1)))
+    
+    return messages, temperature, max_new_tokens, top_p, repetition_penalty
+
+@app.route('/api/chat', methods=['GET', 'POST'])
 def chat():
-    """Chat completion endpoint with streaming"""
-    data = request.json
-    messages = data.get('messages', [])
-    temperature = data.get('temperature', config['generation'].get('temperature', 0.7))
-    max_new_tokens = data.get('max_new_tokens', config['generation'].get('max_new_tokens', 2048))
-    top_p = data.get('top_p', config['generation'].get('top_p', 0.8))
+    """Chat completion endpoint with streaming (supports GET for SSE and POST)"""
+    messages, temperature, max_new_tokens, top_p, repetition_penalty = get_chat_parameters()
     
     # Build prompt from messages
     prompt = ""
@@ -65,6 +81,10 @@ def chat():
     prompt += "Assistant: "
     
     def generate_stream():
+        if model is None or tokenizer is None:
+            yield f"data: {json.dumps({'text': 'Error: Model not loaded. Please check your config and restart the server.'})}\n\n"
+            return
+        
         inputs = tokenizer([prompt], return_tensors="pt").to(device)
         
         streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
@@ -75,8 +95,8 @@ def chat():
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,
-            do_sample=True,
-            repetition_penalty=config['generation'].get('repetition_penalty', 1.1)
+            repetition_penalty=repetition_penalty,
+            do_sample=True
         )
         
         thread = Thread(target=model.generate, kwargs=generation_kwargs)
@@ -84,6 +104,8 @@ def chat():
         
         for new_text in streamer:
             yield f"data: {json.dumps({'text': new_text})}\n\n"
+        
+        yield f"event: done\ndata: {{}}\n\n"
     
     return Response(stream_with_context(generate_stream()), mimetype='text/event-stream')
 

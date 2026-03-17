@@ -5,7 +5,10 @@ import ConfigPanel from './components/ConfigPanel'
 import './App.css'
 
 function App() {
-  const [messages, setMessages] = useState([])
+  const [conversations, setConversations] = useState([
+    { id: 'default', title: '新对话', messages: [], createdAt: Date.now() }
+  ])
+  const [currentConversationId, setCurrentConversationId] = useState('default')
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [darkMode, setDarkMode] = useState(false)
@@ -13,15 +16,46 @@ function App() {
     temperature: 0.7,
     max_new_tokens: 2048,
     top_p: 0.8,
+    repetition_penalty: 1.1,
   })
   const messagesEndRef = useRef(null)
 
+  // Get current conversation
+  const currentConversation = conversations.find(c => c.id === currentConversationId) || conversations[0]
+  const messages = currentConversation?.messages || []
+
+  // Load conversations from localStorage
   useEffect(() => {
+    const saved = localStorage.getItem('chat-llm-conversations')
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved)
+        setConversations(parsed.conversations)
+        setCurrentConversationId(parsed.currentId)
+      } catch (e) {
+        console.error('Failed to load conversations:', e)
+      }
+    } else if (messages.length === 0) {
+      // Create default conversation if none exists
+      setConversations([
+        { id: 'default', title: '新对话', messages: [], createdAt: Date.now() }
+      ])
+      setCurrentConversationId('default')
+    }
+
     // Check system preference
     if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
       setDarkMode(true)
     }
   }, [])
+
+  // Save conversations to localStorage
+  useEffect(() => {
+    localStorage.setItem('chat-llm-conversations', JSON.stringify({
+      conversations,
+      currentId: currentConversationId
+    }))
+  }, [conversations, currentConversationId])
 
   useEffect(() => {
     if (darkMode) {
@@ -39,29 +73,90 @@ function App() {
     scrollToBottom()
   }, [messages])
 
+  // Update conversation messages
+  const updateCurrentConversation = (newMessages) => {
+    setConversations(prev => prev.map(c => 
+      c.id === currentConversationId 
+        ? { ...c, messages: newMessages } 
+        : c
+    ))
+  }
+
+  // Create new conversation
+  const createNewConversation = () => {
+    const newId = Date.now().toString()
+    const newConv = {
+      id: newId,
+      title: '新对话',
+      messages: [],
+      createdAt: Date.now()
+    }
+    setConversations([newConv, ...conversations])
+    setCurrentConversationId(newId)
+    setInput('')
+  }
+
+  // Switch conversation
+  const switchConversation = (id) => {
+    setCurrentConversationId(id)
+    setInput('')
+    setIsLoading(false)
+  }
+
+  // Delete conversation
+  const deleteConversation = (id) => {
+    if (conversations.length <= 1) {
+      // If deleting last conversation, create a new one
+      setConversations([
+        { id: 'default', title: '新对话', messages: [], createdAt: Date.now() }
+      ])
+      setCurrentConversationId('default')
+    } else {
+      const newConversations = conversations.filter(c => c.id !== id)
+      setConversations(newConversations)
+      if (id === currentConversationId) {
+        setCurrentConversationId(newConversations[0].id)
+      }
+    }
+  }
+
+  // Update conversation title based on first message
+  const updateConversationTitle = (messages) => {
+    if (messages.length > 0 && currentConversation.title === '新对话') {
+      const firstMessage = messages[0].content
+      // Take first 20 characters as title
+      const newTitle = firstMessage.slice(0, 20) + (firstMessage.length > 20 ? '...' : '')
+      setConversations(prev => prev.map(c => 
+        c.id === currentConversationId 
+          ? { ...c, title: newTitle } 
+          : c
+      ))
+    }
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
     if (!input.trim() || isLoading) return
 
     const userMessage = { role: 'user', content: input }
-    setMessages([...messages, userMessage])
+    const newMessages = [...messages, userMessage]
+    updateCurrentConversation(newMessages)
+    updateConversationTitle(newMessages)
     setInput('')
     setIsLoading(true)
 
     const assistantMessage = { role: 'assistant', content: '' }
-    setMessages(prev => [...prev, assistantMessage])
+    updateCurrentConversation([...newMessages, assistantMessage])
 
     let fullText = ''
-    const eventSource = new EventSource(`/api/chat?messages=${encodeURIComponent(JSON.stringify([...messages, userMessage]))}&temperature=${config.temperature}&max_new_tokens=${config.max_new_tokens}&top_p=${config.top_p}`)
+    const eventSource = new EventSource(
+      `/api/chat?messages=${encodeURIComponent(JSON.stringify(newMessages))}&temperature=${config.temperature}&max_new_tokens=${config.max_new_tokens}&top_p=${config.top_p}&repetition_penalty=${config.repetition_penalty}`
+    )
 
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data)
       fullText += data.text
-      setMessages(prev => {
-        const newMessages = [...prev]
-        newMessages[newMessages.length - 1].content = fullText
-        return newMessages
-      })
+      updateCurrentConversation([...newMessages, { role: 'assistant', content: fullText }])
     }
 
     eventSource.onerror = () => {
@@ -75,17 +170,21 @@ function App() {
     })
   }
 
-  const clearChat = () => {
-    setMessages([])
+  const clearCurrentChat = () => {
+    updateCurrentConversation([])
   }
 
   return (
     <div className="flex h-screen w-full overflow-hidden">
       <Sidebar 
+        conversations={conversations}
+        currentConversationId={currentConversationId}
         darkMode={darkMode} 
         toggleDarkMode={() => setDarkMode(!darkMode)}
-        clearChat={clearChat}
-        messageCount={messages.length}
+        createNewConversation={createNewConversation}
+        switchConversation={switchConversation}
+        deleteConversation={deleteConversation}
+        clearCurrentChat={clearCurrentChat}
       />
       
       <main className="flex-1 flex flex-col h-full overflow-hidden">
@@ -98,6 +197,12 @@ function App() {
               <p className="text-lg max-w-xl">
                 本地大模型聊天界面，隐私安全，完全可控。开始你的对话吧！
               </p>
+              <button 
+                onClick={createNewConversation}
+                className="mt-6 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+              >
+                ➕ 开始新对话
+              </button>
             </div>
           ) : (
             messages.map((msg, idx) => (
