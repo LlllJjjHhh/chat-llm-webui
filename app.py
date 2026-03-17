@@ -11,7 +11,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStream
 import torch
 from threading import Thread
 
-app = Flask(__name__, static_folder='frontend/dist', template_folder='frontend/dist')
+app = Flask(__name__, static_folder='public', template_folder='public')
 
 # Load config
 with open('config.yaml', 'r', encoding='utf-8') as f:
